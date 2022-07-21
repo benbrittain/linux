@@ -220,6 +220,11 @@ struct mrf24j40 {
 	u8 rx_buf[3];
 	struct spi_transfer rx_trx;
 
+	/* forced rx buffer flush */
+	struct spi_message flush_msg;
+	u8 flush_buf[2];
+	struct spi_transfer flush_trx;
+
 	/* receive handling */
 	struct spi_message rx_buf_msg;
 	u8 rx_addr_buf[2];
@@ -736,12 +741,27 @@ static int mrf24j40_filter(struct ieee802154_hw *hw,
 	return 0;
 }
 
+static void mrf24j40_flush(void *context)
+{
+	int ret;
+	struct mrf24j40 *devrec = context;
+
+	/* Force a flush to address silicon errata #1 (RX MAC). */
+	devrec->flush_msg.complete = NULL;
+	devrec->flush_buf[0] = MRF24J40_WRITESHORT(REG_RXFLUSH);
+	devrec->flush_buf[1] = 0x01; /* RXFLUSH */
+
+	ret = spi_async(devrec->spi, &devrec->flush_msg);
+	if (ret)
+		dev_err(printdev(devrec), "failed to flush rx buffer\n");
+}
+
 static void mrf24j40_handle_rx_read_buf_unlock(struct mrf24j40 *devrec)
 {
 	int ret;
 
 	/* Turn back on reception of packets off the air. */
-	devrec->rx_msg.complete = NULL;
+	devrec->rx_msg.complete = mrf24j40_flush;
 	devrec->rx_buf[0] = MRF24J40_WRITESHORT(REG_BBREG1);
 	devrec->rx_buf[1] = 0x00; /* CLR RXDECINV */
 	ret = spi_async(devrec->spi, &devrec->rx_msg);
@@ -1219,6 +1239,13 @@ mrf24j40_setup_rx_spi_messages(struct mrf24j40 *devrec)
 	devrec->rx_lqi_trx.len = 2;
 	devrec->rx_lqi_trx.rx_buf = devrec->rx_lqi_buf;
 	spi_message_add_tail(&devrec->rx_lqi_trx, &devrec->rx_buf_msg);
+
+	spi_message_init(&devrec->flush_msg);
+	devrec->flush_msg.context = devrec;
+	devrec->flush_trx.len = 2;
+	devrec->flush_trx.tx_buf = devrec->flush_buf;
+	devrec->flush_trx.rx_buf = devrec->flush_buf;
+	spi_message_add_tail(&devrec->flush_trx, &devrec->flush_msg);
 }
 
 static void
